@@ -3,6 +3,13 @@ import tensorflow as tf
 import numpy as np
 import random
 import matplotlib.pyplot as plt
+import datetime
+import os
+
+dir_path = os.path.dirname(os.path.realpath(__file__))
+base_log = dir_path + "/log/log_%s"
+suffix = datetime.datetime.now().strftime("%y%m%d_%H%M%S")
+log_path = base_log % suffix
 
 def policy_gradient():
     with tf.variable_scope("policy"):
@@ -16,6 +23,9 @@ def policy_gradient():
         eligibility = tf.log(action_probabilities) * advantages
         loss = -tf.reduce_sum(eligibility)
         optimizer = tf.train.AdamOptimizer(0.01).minimize(loss)
+
+        # logging
+        tf.summary.scalar("loss", loss)
         return probabilities, state, actions, advantages, optimizer
 
 def value_gradient():
@@ -31,9 +41,12 @@ def value_gradient():
         diffs = calculated - newvals
         loss = tf.nn.l2_loss(diffs)
         optimizer = tf.train.AdamOptimizer(0.1).minimize(loss)
+
+        # logging
+        tf.summary.scalar("loss", loss)
         return calculated, state, newvals, optimizer, loss
 
-def run_episode(env, policy_grad, value_grad, sess):
+def run_episode(env, policy_grad, value_grad, summary_op, sess):
     pl_prob, pl_state, pl_actions, pl_advantages, pl_optimizer = policy_grad
     vl_calculated, vl_state, vl_newvals, vl_optimizer, vl_loss = value_grad
     observation = env.reset()
@@ -44,7 +57,8 @@ def run_episode(env, policy_grad, value_grad, sess):
     update_vals = []
     advantages = []
 
-    for _ in xrange(200):
+    # obtain transition & evaluation total_reward
+    for _ in range(200):
         obs_vector = np.expand_dims(observation, axis=0)
         probs = sess.run(pl_prob,feed_dict={pl_state: obs_vector})
         action = 0 if random.uniform(0,1) < probs[0][0] else 1
@@ -70,7 +84,7 @@ def run_episode(env, policy_grad, value_grad, sess):
         future_reward = 0
         future_transitions = len(transitions) - index
         decrease = 1
-        for index2 in xrange(future_transitions):
+        for index2 in range(future_transitions):
             future_reward += transitions[ index + index2 ][2] * decrease
             decrease = decrease * 0.97
         obs_vector = np.expand_dims(observation, axis=0)
@@ -82,38 +96,41 @@ def run_episode(env, policy_grad, value_grad, sess):
         # advantages : how much better was this action than current action
         advantages.append(future_reward - current_val)
 
-    # udpate value function
+    # udpate value function & policy function
     update_vals_vector = np.expand_dims(update_vals, axis=1)
-    sess.run(vl_optimizer, feed_dict={vl_state: states, vl_newvals: update_vals_vector})
+    advantages_vector = np.expand_dims(advantages, axis=1)
 
-    advantages_vector = np.expand_dims(advantages,axis=1)
-    sess.run(pl_optimizer, feed_dict={pl_state: states, pl_advantages: advantages_vector, pl_actions: actions})
+    _, _, summary = sess.run([vl_optimizer, pl_optimizer, summary_op], feed_dict={vl_state: states, pl_state: states, vl_newvals: update_vals_vector, pl_advantages: advantages_vector, pl_actions: actions})
 
-    return total_reward
+    return total_reward, summary
 
 def verify_value_grad(env, value_grad, sess):
     pass
-
-
-
 
 if __name__ == "__main__":
     env = gym.make('CartPole-v0')
     policy_grad = policy_gradient()
     value_grad = value_gradient()
+
+
+
+    summary_op = tf.summary.merge_all()
+
     sess = tf.InteractiveSession()
-    sess.run(tf.initialize_all_variables())
+    sess.run(tf.global_variables_initializer())
+    summary_writer = tf.summary.FileWriter(log_path, sess.graph)
 
     t = 0
     reward_list = []
-    epoch = 3000
-    for i in xrange(epoch):
-        reward = run_episode(env, policy_grad, value_grad, sess)
+    epoch = 1000
+    for tick in range(epoch):
+        reward, summary = run_episode(env, policy_grad, value_grad, summary_op,sess)
+        summary_writer.add_summary(summary, tick)
         reward_list.append(reward)
-        print "running %4d reward %d" % (i, reward)
+        print("running %4d reward %d" % (tick, reward))
         t += reward
 
-    print "average : %d" % (t / epoch)
+    print("average : %d" % (t / epoch))
     plt.plot(reward_list)
     plt.show()
 
